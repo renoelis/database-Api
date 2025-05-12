@@ -1,0 +1,33 @@
+# Python 虚拟环境
+venv/
+.venv/
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+
+# 本地配置文件
+.env
+.env.*
+.cursor/
+
+# IDE配置
+.idea/
+.vscode/
+
+# 单元测试
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 分发/打包文件
+dist/
+build/
+*.egg-info/ 

@@ -6,11 +6,11 @@ logger = logging.getLogger("database-api")
 
 # PostgreSQL配置（用于存储令牌信息）
 DEFAULT_PG_CONFIG = {
-    "host": "120.46.147.53",
+    "host": "xxxx",
     "port": 5432,
-    "database": "pro_db",
-    "user": "renoelis",
-    "password": "renoelis02@gmail.com" ,
+    "database": "xxxx",
+    "user": "xxxx",
+    "password": "xxxxx" ,
     "sslmode": "prefer",
     "connect_timeout": 30
 }

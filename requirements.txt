@@ -9,5 +9,6 @@ python-multipart==0.0.6
 starlette==0.27.0
 aiohttp==3.8.5
 aiodns==3.0.0
-cchardet==2.1.7
+# cchardet==2.1.7  # 在ARM架构上有编译问题
+chardet==4.0.0     # 使用chardet替代cchardet
 asyncio==3.4.3 

@@ -3,11 +3,15 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import logging
 import os
+import json
+from pathlib import Path
 
 from app.routers import postgresql, mongodb
 from app.utils.pool import postgresql_pool, mongodb_pool
 from app.utils.concurrency import ConcurrencyLimiterMiddleware
 from app.utils.error_handler import setup_error_handlers
+from app.utils.auth import initialize_auth
+from app.utils.auth_middleware import AuthMiddleware
 
 # 配置日志
 logging.basicConfig(
@@ -15,6 +19,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("database-api")
+
+# 初始化认证系统
+initialize_auth()
 
 # 创建FastAPI应用
 app = FastAPI(
@@ -45,6 +52,9 @@ app.add_middleware(
     mongodb_max_concurrent=mongodb_max_concurrent,
 )
 
+# 添加身份验证中间件
+app.add_middleware(AuthMiddleware)
+
 logger.info(f"配置并发控制: 总并发={max_concurrent_requests}, PostgreSQL={postgresql_max_concurrent}, MongoDB={mongodb_max_concurrent}")
 
 # 注册路由
@@ -57,6 +67,29 @@ setup_error_handlers(app)
 @app.get("/")
 async def root():
     return {"message": "数据库API服务已启动"}
+
+@app.get("/apiDatabase/token")
+async def get_token():
+    """获取当前配置的访问令牌"""
+    try:
+        # 读取配置文件中的令牌
+        base_dir = Path(os.path.dirname(os.path.abspath(__file__))).parent
+        config_file = base_dir / "config" / "access_token.json"
+        
+        if not config_file.exists():
+            return {"error": "配置文件不存在"}
+            
+        with open(config_file, "r") as f:
+            config = json.load(f)
+            token = config.get("accessToken")
+            
+        if not token:
+            return {"error": "未找到有效的访问令牌"}
+            
+        return {"accessToken": token}
+    except Exception as e:
+        logger.error(f"获取令牌时出错: {str(e)}")
+        return {"error": f"获取令牌失败: {str(e)}"}
 
 @app.on_event("startup")
 async def startup_event():

@@ -5,6 +5,8 @@ services:
     restart: always
     ports:
       - "3010:3010"
+    volumes:
+      - ./config:/app/config
     environment:
       - PORT=3010
       - MAX_CONCURRENT_REQUESTS=200

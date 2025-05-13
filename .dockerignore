@@ -13,6 +13,7 @@ __pycache__/
 .env.*
 
 .cursor/
+.gitignore
 
 # IDE配置
 .idea/

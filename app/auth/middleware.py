@@ -3,9 +3,8 @@ from fastapi import Request, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.responses import JSONResponse
 import json
-from psycopg2.extras import DictCursor
-from app.utils.pool import postgresql_pool
 from app.utils.response import error_response
+from app.database.auth_operations import validate_auth_token, update_token_usage
 
 logger = logging.getLogger("database-api")
 
@@ -48,7 +47,7 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
             )
         
         # 验证令牌
-        token_valid, token_info = await self._validate_token(access_token)
+        token_valid, token_info = await validate_auth_token(access_token)
         if not token_valid:
             return JSONResponse(
                 status_code=401,
@@ -80,49 +79,6 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
         
         return response
     
-    async def _validate_token(self, access_token):
-        """验证访问令牌是否有效"""
-        try:
-            # 获取PostgreSQL连接
-            conn, error = postgresql_pool.get_connection(
-                host="120.46.147.53",
-                port=5432, 
-                database="pro_db",
-                user="renoelis",
-                password="renoelis02@gmail.com"
-            )
-            
-            if error:
-                logger.error(f"数据库连接失败: {error}")
-                return False, None
-            
-            # 查询令牌信息
-            with conn.cursor(cursor_factory=DictCursor) as cursor:
-                cursor.execute(
-                    "SELECT * FROM api_tokens WHERE access_token = %s AND is_active = TRUE",
-                    (access_token,)
-                )
-                token_record = cursor.fetchone()
-            
-            postgresql_pool.release_connection(
-                host="120.46.147.53",
-                port=5432, 
-                database="pro_db",
-                user="renoelis",
-                conn=conn
-            )
-            
-            if not token_record:
-                return False, None
-            
-            # 转换为字典
-            token_info = dict(token_record)
-            return True, token_info
-        
-        except Exception as e:
-            logger.error(f"令牌验证过程中发生错误: {str(e)}")
-            return False, None
-    
     async def _update_token_usage(self, token_id, ws_id, request, response):
         """更新令牌使用次数并记录使用日志"""
         try:
@@ -152,66 +108,19 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
             # 响应状态
             status = "success" if response.status_code < 400 else "error"
             
-            # 获取PostgreSQL连接
-            conn, error = postgresql_pool.get_connection(
-                host="120.46.147.53",
-                port=5432, 
-                database="pro_db",
-                user="renoelis",
-                password="renoelis02@gmail.com"
+            # 使用封装的函数更新令牌使用情况
+            success = await update_token_usage(
+                token_id=token_id,
+                ws_id=ws_id,
+                operation_type=operation_type,
+                target_database=target_database,
+                target_collection=target_collection,
+                status=status,
+                request_details=request_body
             )
             
-            if error:
-                logger.error(f"数据库连接失败: {error}")
-                return
-            
-            with conn.cursor() as cursor:
-                # 开始事务
-                conn.autocommit = False
+            if not success:
+                logger.error("更新令牌使用信息失败")
                 
-                try:
-                    # 1. 更新令牌使用次数（如果是limited类型）
-                    if request.state.token_info["token_type"] == "limited":
-                        cursor.execute(
-                            "UPDATE api_tokens SET remaining_calls = remaining_calls - 1, updated_at = CURRENT_TIMESTAMP WHERE token_id = %s",
-                            (token_id,)
-                        )
-                    
-                    # 2. 记录使用日志
-                    cursor.execute(
-                        """
-                        INSERT INTO token_usage_logs 
-                        (token_id, ws_id, operation_type, target_database, target_collection, status, request_details)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            token_id,
-                            ws_id,
-                            operation_type,
-                            target_database,
-                            target_collection,
-                            status,
-                            json.dumps(request_body) if request_body else None
-                        )
-                    )
-                    
-                    # 提交事务
-                    conn.commit()
-                except Exception as e:
-                    # 回滚事务
-                    conn.rollback()
-                    logger.error(f"更新令牌使用信息失败: {str(e)}")
-                finally:
-                    # 恢复自动提交
-                    conn.autocommit = True
-            
-            postgresql_pool.release_connection(
-                host="120.46.147.53",
-                port=5432, 
-                database="pro_db",
-                user="renoelis",
-                conn=conn
-            )
-            
         except Exception as e:
             logger.error(f"更新令牌使用次数时发生错误: {str(e)}") 

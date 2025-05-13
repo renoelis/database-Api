@@ -10,6 +10,7 @@ from app.auth.middleware import TokenAuthMiddleware
 from app.utils.pool import postgresql_pool, mongodb_pool
 from app.utils.concurrency import ConcurrencyLimiterMiddleware
 from app.utils.error_handler import setup_error_handlers
+from app.database.auth_operations import init_auth_tables
 
 # 配置日志
 logging.basicConfig(
@@ -69,64 +70,12 @@ async def startup_event():
     """应用启动时执行的事件，初始化连接池和数据库表"""
     logger.info("数据库API服务启动，初始化连接池")
     
-    # 初始化数据库表
-    try:
-        # 创建表结构
-        conn, error = postgresql_pool.get_connection(
-            host="120.46.147.53",
-            port=5432, 
-            database="pro_db",
-            user="renoelis",
-            password="renoelis02@gmail.com"
-        )
-        
-        if not error and conn:
-            with conn.cursor() as cursor:
-                # 创建api_tokens表
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS api_tokens (
-                    token_id SERIAL PRIMARY KEY,
-                    access_token VARCHAR(64) UNIQUE NOT NULL,
-                    email VARCHAR(100) NOT NULL,
-                    ws_id VARCHAR(50) NOT NULL UNIQUE,
-                    token_type VARCHAR(20) NOT NULL DEFAULT 'limited',
-                    remaining_calls INTEGER,
-                    total_calls INTEGER,
-                    is_active BOOLEAN DEFAULT TRUE,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                )
-                """)
-                
-                # 创建token_usage_logs表
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS token_usage_logs (
-                    log_id SERIAL PRIMARY KEY,
-                    token_id INTEGER REFERENCES api_tokens(token_id),
-                    ws_id VARCHAR(50) NOT NULL,
-                    operation_type VARCHAR(50) NOT NULL,
-                    target_database VARCHAR(50) NOT NULL,
-                    target_collection VARCHAR(50),
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    status VARCHAR(20) NOT NULL,
-                    request_details JSONB
-                )
-                """)
-                
-                conn.commit()
-                logger.info("数据库表初始化完成")
-            
-            postgresql_pool.release_connection(
-                host="120.46.147.53",
-                port=5432, 
-                database="pro_db",
-                user="renoelis",
-                conn=conn
-            )
-        else:
-            logger.error(f"数据库初始化失败: {error}")
-    except Exception as e:
-        logger.error(f"数据库初始化过程中发生错误: {str(e)}")
+    # 初始化令牌认证系统数据库表
+    success, error = await init_auth_tables()
+    if not success:
+        logger.error(f"初始化令牌认证系统数据库表失败: {error}")
+    else:
+        logger.info("初始化令牌认证系统数据库表成功")
 
 @app.on_event("shutdown")
 async def shutdown_event():

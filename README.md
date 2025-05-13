@@ -13,6 +13,7 @@
 - **高并发请求控制** - 保护服务器资源不被过载
 - **全局统一错误处理** - 确保所有错误响应格式一致
 - **自动数据库集合验证** - 验证集合/表是否存在
+- **基于令牌的API访问控制** - 安全管理API访问权限和使用次数
 
 ## 快速开始
 
@@ -167,6 +168,8 @@ POST /apiDatabase/mongodb
 | 1100-1199 | MongoDB特定错误 |
 | 1120 | MongoDB集合不存在 |
 | 1400 | 请求参数验证失败 |
+| 1401-1403 | 令牌认证错误 |
+| 1050-1051 | 令牌操作错误 |
 | 9999 | 服务器内部错误 |
 
 ## 连接池与并发控制
@@ -223,29 +226,22 @@ MONGODB_MAX_CONCURRENT=100
 
 ## 令牌认证系统
 
-为了提供安全的API访问，数据库API服务现在集成了基于令牌的认证系统。此系统可以控制API的访问并跟踪使用情况。
+为了提供安全的API访问，数据库API服务集成了基于令牌的认证系统，用于控制API访问权限并跟踪使用情况。令牌信息存储在PostgreSQL数据库中，每次API调用都会验证令牌有效性并根据需要扣减使用次数。
+
+### 系统架构
+
+- **令牌存储**: 所有令牌信息存储在PostgreSQL数据库中
+- **令牌验证**: 每次API请求都需要提供有效令牌
+- **使用计费**: 根据操作类型自动扣减令牌使用次数
+- **集中配置管理**: 所有数据库连接信息集中在配置文件中，支持环境变量覆盖
 
 ### 数据库初始化流程
 
-在首次部署服务时，需要执行以下数据库初始化步骤：
+在首次部署服务时，系统会自动创建所需的数据库表结构：
 
-#### 1. 检查并创建数据库
+#### 1. 表结构设计
 
-如果需要新建数据库：
-
-```sql
-CREATE DATABASE pro_db;
-```
-
-如果数据库已存在，直接连接到现有数据库：
-
-```bash
-psql -h [host] -p 5432 -U [username] -d pro_db
-```
-
-#### 2. 创建令牌认证表
-
-连接到数据库后，创建令牌认证所需的表结构：
+令牌认证系统使用两个主要表：
 
 ```sql
 -- 创建API令牌表
@@ -276,82 +272,31 @@ CREATE TABLE IF NOT EXISTS token_usage_logs (
 );
 ```
 
-#### 3. 启动与验证
+#### 2. 自动初始化
 
-创建完表结构后，启动服务并验证表是否创建成功：
+系统在启动时会自动检查并创建这些表结构，无需手动干预：
 
 ```bash
-# 启动服务
+# 启动服务即可自动初始化数据库
 python run.py
-
-# 验证表是否创建成功
-psql -h [host] -p 5432 -U [username] -d pro_db -c "\dt"
 ```
 
-应当看到`api_tokens`和`token_usage_logs`两个表在输出结果中。
+服务启动后会自动执行数据库表初始化逻辑，确保令牌认证系统正常工作。
 
-#### 4. 自动初始化功能
+### 配置管理
 
-为了简化部署流程，服务在启动时会自动检查并创建所需的表结构。该功能是通过在`app/main.py`的启动事件中实现的：
+令牌认证系统数据库的连接信息可以通过环境变量进行配置：
 
-```python
-@app.on_event("startup")
-async def startup_event():
-    """应用启动时执行的事件，初始化连接池和数据库表"""
-    logger.info("数据库API服务启动，初始化连接池")
-    
-    # 初始化数据库表
-    try:
-        # 创建表结构
-        conn, error = postgresql_pool.get_connection(
-            host="120.46.147.53",
-            port=5432, 
-            database="pro_db",
-            user="renoelis",
-            password="renoelis02@gmail.com"
-        )
-        
-        if not error and conn:
-            with conn.cursor() as cursor:
-                # 创建api_tokens表
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS api_tokens (
-                    token_id SERIAL PRIMARY KEY,
-                    access_token VARCHAR(64) UNIQUE NOT NULL,
-                    email VARCHAR(100) NOT NULL,
-                    ws_id VARCHAR(50) NOT NULL UNIQUE,
-                    token_type VARCHAR(20) NOT NULL DEFAULT 'limited',
-                    remaining_calls INTEGER,
-                    total_calls INTEGER,
-                    is_active BOOLEAN DEFAULT TRUE,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                )
-                """)
-                
-                # 创建token_usage_logs表
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS token_usage_logs (
-                    log_id SERIAL PRIMARY KEY,
-                    token_id INTEGER REFERENCES api_tokens(token_id),
-                    ws_id VARCHAR(50) NOT NULL,
-                    operation_type VARCHAR(50) NOT NULL,
-                    target_database VARCHAR(50) NOT NULL,
-                    target_collection VARCHAR(50),
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    status VARCHAR(20) NOT NULL,
-                    request_details JSONB
-                )
-                """)
-                
-                conn.commit()
-                logger.info("数据库表初始化完成")
-            
-            postgresql_pool.release_connection(conn)
-        else:
-            logger.error(f"数据库初始化失败: {error}")
-    except Exception as e:
-        logger.error(f"数据库初始化过程中发生错误: {str(e)}")
+```bash
+# PostgreSQL连接配置（用于存储令牌信息）
+export PG_HOST=your-db-host
+export PG_PORT=5432
+export PG_DATABASE=your-db-name
+export PG_USER=your-username
+export PG_PASSWORD=your-password
+```
+
+这些配置会覆盖默认值，便于在不同环境中部署。
 
 ### 令牌特性
 
@@ -462,52 +407,36 @@ GET /apiDatabase/auth/token/info?ws_id=workspace123
 
 ### 令牌使用流程
 
-令牌认证系统的设计目的是控制和管理对数据库API的访问，特别是针对PostgreSQL和MongoDB数据库操作接口的调用权限和使用限额。完整的使用流程如下：
+整体使用流程如下：
 
 #### 1. 令牌创建与管理
 
-1. 首先创建一个与工作区ID关联的访问令牌：
+首先创建一个与工作区ID关联的访问令牌：
 ```bash
 curl -X POST http://localhost:3010/apiDatabase/auth/token \
   -H "Content-Type: application/json" \
   -d '{"email":"user@example.com","ws_id":"workspace123","token_type":"limited","total_calls":1000}'
 ```
 
-2. 系统返回访问令牌，记录下`access_token`的值：
-```json
-{
-  "errCode": 0,
-  "data": {
-    "token_id": 1,
-    "access_token": "yZVKdhfL3ajfQ9XcvbnmPzcl5KPJSd8vwMZ9ks7JhSfKkd72",
-    "ws_id": "workspace123",
-    "token_type": "limited",
-    "remaining_calls": 1000,
-    "total_calls": 1000
-  },
-  "errMsg": null
-}
-```
-
 #### 2. 使用令牌调用数据库API
 
-使用上一步获取的令牌，可以调用PostgreSQL和MongoDB相关接口：
+使用获取的令牌，调用数据库API接口：
 
 ##### PostgreSQL查询示例：
 
 ```bash
 curl -X POST http://localhost:3010/apiDatabase/postgresql \
-  -H "accessToken: yZVKdhfL3ajfQ9XcvbnmPzcl5KPJSd8vwMZ9ks7JhSfKkd72" \
+  -H "accessToken: your_access_token" \
   -H "Content-Type: application/json" \
   -d '{
     "connection": {
-      "host": "120.46.147.53",
+      "host": "your-db-host",
       "port": 5432,
-      "database": "pro_db",
-      "user": "renoelis",
-      "password": "renoelis02@gmail.com"
+      "database": "your_database",
+      "user": "your_username",
+      "password": "your_password"
     },
-    "sql": "SELECT * FROM test LIMIT 5",
+    "sql": "SELECT * FROM your_table LIMIT 5",
     "parameters": []
   }'
 ```
@@ -516,17 +445,17 @@ curl -X POST http://localhost:3010/apiDatabase/postgresql \
 
 ```bash
 curl -X POST http://localhost:3010/apiDatabase/mongodb \
-  -H "accessToken: yZVKdhfL3ajfQ9XcvbnmPzcl5KPJSd8vwMZ9ks7JhSfKkd72" \
+  -H "accessToken: your_access_token" \
   -H "Content-Type: application/json" \
   -d '{
     "connection": {
-      "host": "120.46.147.53",
+      "host": "your-mongo-host",
       "port": 27017,
-      "database": "test_db",
-      "username": "mongo_user",
-      "password": "mongo_password"
+      "database": "your_database",
+      "username": "your_username",
+      "password": "your_password"
     },
-    "collection": "users",
+    "collection": "your_collection",
     "operation": "find",
     "filter": {"active": true},
     "limit": 10

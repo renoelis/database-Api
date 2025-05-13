@@ -430,6 +430,13 @@ async def update_token_usage(token_id: int, ws_id: str, operation_type: str,
     Returns:
         操作是否成功
     """
+    # 确保输入参数不为None
+    target_database = target_database or ""
+    target_collection = target_collection or ""
+    
+    # 减少日志，只在DEBUG级别记录详细信息
+    logger.debug(f"执行令牌使用记录: token_id={token_id}, operation={operation_type}")
+    
     try:
         # 获取数据库连接
         config = auth_db_config
@@ -445,43 +452,63 @@ async def update_token_usage(token_id: int, ws_id: str, operation_type: str,
             logger.error(f"数据库连接失败: {error}")
             return False
         
-        with conn.cursor() as cursor:
-            # 开始事务
+        # 保存原始自动提交状态
+        original_autocommit = conn.autocommit
+        new_remaining = None
+        
+        try:
+            # 设置为手动提交模式
             conn.autocommit = False
             
-            try:
-                # 1. 获取当前令牌类型
+            with conn.cursor() as cursor:
+                # 1. 获取当前令牌类型和剩余次数
                 cursor.execute(
-                    "SELECT token_type FROM api_tokens WHERE token_id = %s",
+                    "SELECT token_type, remaining_calls FROM api_tokens WHERE token_id = %s FOR UPDATE",
                     (token_id,)
                 )
                 result = cursor.fetchone()
                 if not result:
+                    logger.error(f"未找到令牌信息: token_id={token_id}")
                     conn.rollback()
-                    postgresql_pool.release_connection(
-                        host=config["host"],
-                        port=config["port"],
-                        database=config["database"],
-                        user=config["user"],
-                        conn=conn
-                    )
                     return False
-                    
-                token_type = result[0]
+                
+                token_type, remaining_calls = result
+                logger.debug(f"令牌信息: token_id={token_id}, token_type={token_type}, remaining_calls={remaining_calls}")
                 
                 # 2. 更新令牌使用次数（如果是limited类型）
+                new_remaining = remaining_calls
                 if token_type == "limited":
                     cursor.execute(
-                        "UPDATE api_tokens SET remaining_calls = remaining_calls - 1, updated_at = CURRENT_TIMESTAMP WHERE token_id = %s",
+                        """
+                        UPDATE api_tokens 
+                        SET remaining_calls = GREATEST(remaining_calls - 1, 0), 
+                            updated_at = CURRENT_TIMESTAMP 
+                        WHERE token_id = %s 
+                        RETURNING remaining_calls
+                        """,
                         (token_id,)
                     )
+                    new_remaining = cursor.fetchone()[0]
+                    
+                    # 只记录类型为limited且实际减少次数时的信息
+                    if remaining_calls != new_remaining:
+                        logger.info(f"令牌使用次数更新: token_id={token_id}, remaining_calls={new_remaining}")
                 
-                # 3. 记录使用日志
+                # 3. 记录使用日志（对所有类型令牌都记录）
+                request_json = None
+                if request_details:
+                    try:
+                        request_json = json.dumps(request_details)
+                    except:
+                        logger.error("无法序列化请求详情为JSON")
+                        request_json = json.dumps({"error": "无法序列化原始请求详情"})
+                
                 cursor.execute(
                     """
                     INSERT INTO token_usage_logs 
                     (token_id, ws_id, operation_type, target_database, target_collection, status, request_details)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING log_id
                     """,
                     (
                         token_id,
@@ -490,40 +517,100 @@ async def update_token_usage(token_id: int, ws_id: str, operation_type: str,
                         target_database,
                         target_collection,
                         status,
-                        json.dumps(request_details) if request_details else None
+                        request_json
                     )
                 )
                 
-                # 提交事务
+                log_id = cursor.fetchone()[0]
+                logger.debug(f"令牌使用记录已创建: log_id={log_id}, token_id={token_id}, token_type={token_type}")
+                
+                # 显式提交事务
                 conn.commit()
-                
-            except Exception as e:
-                # 回滚事务
-                conn.rollback()
-                logger.error(f"更新令牌使用信息失败: {str(e)}")
-                postgresql_pool.release_connection(
-                    host=config["host"],
-                    port=config["port"],
-                    database=config["database"],
-                    user=config["user"],
-                    conn=conn
-                )
-                return False
-                
-            finally:
-                # 恢复自动提交
-                conn.autocommit = True
+            
+            return True
+            
+        except Exception as e:
+            # 回滚事务
+            conn.rollback()
+            logger.error(f"更新令牌使用信息失败: {str(e)}")
+            return False
+            
+        finally:
+            # 恢复原始自动提交状态
+            conn.autocommit = original_autocommit
+            # 归还连接到连接池
+            postgresql_pool.release_connection(
+                host=config["host"],
+                port=config["port"],
+                database=config["database"],
+                user=config["user"],
+                conn=conn
+            )
         
-        postgresql_pool.release_connection(
+    except Exception as e:
+        logger.error(f"处理令牌使用记录时发生错误: {str(e)}")
+        return False
+
+async def cleanup_token_usage_logs() -> Tuple[bool, Optional[str]]:
+    """
+    清理旧的令牌使用日志记录
+    
+    保留最近1个月的日志，删除更早的记录
+    
+    Returns:
+        (成功标志, 错误信息)
+    """
+    try:
+        # 获取数据库连接
+        config = auth_db_config
+        conn, error = postgresql_pool.get_connection(
             host=config["host"],
             port=config["port"],
             database=config["database"],
             user=config["user"],
-            conn=conn
+            password=config["password"]
         )
         
-        return True
+        if error:
+            logger.error(f"数据库连接失败: {error}")
+            return False, f"数据库连接失败: {error}"
+        
+        try:
+            # 查询1个月前的日志数量，用于记录
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM token_usage_logs WHERE created_at < NOW() - INTERVAL '1 month'"
+                )
+                count = cursor.fetchone()[0]
+            
+            if count == 0:
+                logger.debug("没有需要清理的旧日志记录")
+                return True, None
+            
+            # 删除1个月前的日志记录
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM token_usage_logs WHERE created_at < NOW() - INTERVAL '1 month'"
+                )
+                conn.commit()
+                
+            logger.info(f"已清理 {count} 条1个月前的令牌使用日志")
+            return True, None
+            
+        except Exception as e:
+            logger.error(f"清理令牌使用日志失败: {str(e)}")
+            return False, f"清理令牌使用日志失败: {str(e)}"
+            
+        finally:
+            # 归还连接到连接池
+            postgresql_pool.release_connection(
+                host=config["host"],
+                port=config["port"],
+                database=config["database"],
+                user=config["user"],
+                conn=conn
+            )
         
     except Exception as e:
-        logger.error(f"更新令牌使用次数时发生错误: {str(e)}")
-        return False 
+        logger.error(f"清理令牌使用日志过程中发生错误: {str(e)}")
+        return False, str(e) 

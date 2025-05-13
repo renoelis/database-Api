@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import logging
 import os
+import asyncio
+import datetime
 
 from app.routers import postgresql, mongodb
 from app.auth.routes import router as auth_router
@@ -10,7 +12,7 @@ from app.auth.middleware import TokenAuthMiddleware
 from app.utils.pool import postgresql_pool, mongodb_pool
 from app.utils.concurrency import ConcurrencyLimiterMiddleware
 from app.utils.error_handler import setup_error_handlers
-from app.database.auth_operations import init_auth_tables
+from app.database.auth_operations import init_auth_tables, cleanup_token_usage_logs
 
 # 配置日志
 logging.basicConfig(
@@ -65,6 +67,36 @@ setup_error_handlers(app)
 async def root():
     return {"message": "数据库API服务已启动"}
 
+# 令牌使用日志清理任务
+async def scheduled_cleanup_token_logs():
+    """定期清理令牌使用日志的任务"""
+    while True:
+        try:
+            # 计算距离下一个凌晨3点的时间
+            now = datetime.datetime.now()
+            next_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
+            if now >= next_run:
+                next_run = next_run + datetime.timedelta(days=1)
+            
+            # 计算需要等待的秒数
+            wait_seconds = (next_run - now).total_seconds()
+            # 只在首次启动时记录下一次执行时间
+            logger.debug(f"令牌使用日志清理计划: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # 等待到下一次执行时间
+            await asyncio.sleep(wait_seconds)
+            
+            # 执行清理任务
+            logger.info(f"开始执行令牌使用日志清理任务: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            success, error = await cleanup_token_usage_logs()
+            if not success:
+                logger.error(f"令牌使用日志清理失败: {error}")
+            
+        except Exception as e:
+            logger.error(f"令牌使用日志清理任务异常: {str(e)}")
+            # 出错后等待一小时再次尝试
+            await asyncio.sleep(3600)
+
 @app.on_event("startup")
 async def startup_event():
     """应用启动时执行的事件，初始化连接池和数据库表"""
@@ -76,6 +108,10 @@ async def startup_event():
         logger.error(f"初始化令牌认证系统数据库表失败: {error}")
     else:
         logger.info("初始化令牌认证系统数据库表成功")
+    
+    # 启动定时清理任务
+    asyncio.create_task(scheduled_cleanup_token_logs())
+    logger.info("令牌使用日志清理定时任务已启动")
 
 @app.on_event("shutdown")
 async def shutdown_event():

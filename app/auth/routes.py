@@ -1,10 +1,10 @@
 import logging
 import secrets
 import string
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from app.utils.response import success_response, error_response
 from app.auth.models import TokenCreate, TokenUpdate, TokenInfoResponse
-from app.database.auth_operations import create_auth_token, update_auth_token, get_auth_token_info
+from app.database.auth_operations import create_auth_token, update_auth_token, get_auth_token_info, cleanup_token_usage_logs
 
 logger = logging.getLogger("database-api")
 router = APIRouter(prefix="/auth", tags=["认证"])
@@ -100,4 +100,21 @@ async def get_token_info(ws_id: str = Query(..., description="工作区ID")):
         error_code = 1051 if "未找到工作区ID" in error_msg else 1000 if "数据库连接失败" in error_msg else 9999
         return error_response(error_code, error_msg)
     
-    return success_response(token_info) 
+    return success_response(token_info)
+
+
+@router.post("/logs/cleanup", summary="清理旧的令牌使用日志", status_code=status.HTTP_202_ACCEPTED)
+async def cleanup_logs(response: Response):
+    """
+    手动触发清理旧的令牌使用日志
+    
+    清理1个月前的所有令牌使用日志记录
+    """
+    # 执行清理操作
+    success, error_msg = await cleanup_token_usage_logs()
+    
+    if not success:
+        response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        return error_response(1100, f"清理令牌使用日志失败: {error_msg}")
+    
+    return success_response({"message": "令牌使用日志清理任务已完成"}) 

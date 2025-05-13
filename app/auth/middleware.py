@@ -12,11 +12,24 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
     """令牌认证中间件，用于验证API请求中的访问令牌"""
     
     async def dispatch(self, request: Request, call_next):
+        # 保存请求体以便多次读取
+        body_content = None
+        if request.method != "GET":
+            try:
+                body_content = await request.body()
+                # 创建一个新的请求体
+                async def receive():
+                    return {"type": "http.request", "body": body_content}
+                request._receive = receive
+            except Exception as e:
+                logger.error(f"保存请求体失败: {str(e)}")
+        
         # 不需要验证的路径
         exclude_paths = [
             "/apiDatabase/auth/token",
             "/apiDatabase/auth/token/update",
             "/apiDatabase/auth/token/info",
+            "/apiDatabase/auth/logs/cleanup",
             "/",
             "/docs",
             "/openapi.json",
@@ -25,7 +38,9 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
         
         # 检查是否需要跳过验证
         path = request.url.path
-        if any(path.startswith(excluded) for excluded in exclude_paths):
+        if any(path == excluded or (excluded != "/" and path.startswith(excluded + "/")) for excluded in exclude_paths):
+            # 减少日志记录，仅在调试级别记录
+            logger.debug(f"跳过验证路径: {path}")
             return await call_next(request)
         
         # 获取访问令牌
@@ -54,8 +69,11 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
                 content=error_response(1402, "无效的访问令牌")
             )
         
-        # 检查令牌调用次数（仅对写操作）
-        if request.method != "GET" and token_info["token_type"] == "limited":
+        # 严格检查写操作 - POST, PUT, PATCH, DELETE方法
+        is_write_operation = request.method in ["POST", "PUT", "PATCH", "DELETE"]
+        
+        # 检查令牌调用次数（仅对有限制的令牌进行检查）
+        if is_write_operation and token_info["token_type"] == "limited":
             if token_info["remaining_calls"] <= 0:
                 return JSONResponse(
                     status_code=403,
@@ -68,29 +86,35 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
         # 继续处理请求
         response = await call_next(request)
         
-        # 完成请求后，如果是写操作，更新令牌使用次数并记录日志
-        if request.method != "GET" and token_info["token_type"] == "limited":
-            await self._update_token_usage(
+        # 完成请求后，记录令牌使用日志（对所有写操作，不管是限制性还是无限制令牌）
+        if is_write_operation:
+            # 简化日志，只记录路径和方法
+            logger.debug(f"处理令牌使用: {request.method} {path}")
+            success = await self._update_token_usage(
                 token_id=token_info["token_id"],
                 ws_id=token_info["ws_id"],
+                token_type=token_info["token_type"],
                 request=request,
-                response=response
+                response=response,
+                body_content=body_content
             )
+            if not success:
+                logger.error(f"令牌使用记录失败: token_id={token_info['token_id']}")
         
         return response
     
-    async def _update_token_usage(self, token_id, ws_id, request, response):
+    async def _update_token_usage(self, token_id, ws_id, token_type, request, response, body_content):
         """更新令牌使用次数并记录使用日志"""
         try:
             # 获取请求和响应的详细信息
             request_body = None
             try:
-                # 重置请求体位置
-                await request.body()
-                request_body = await request.json()
-            except:
-                # 如果无法解析为JSON，则保留为None
-                pass
+                # 尝试解析请求体
+                if body_content:
+                    request_body = json.loads(body_content)
+            except Exception as e:
+                logger.error(f"解析请求体失败: {str(e)}")
+                # 即使请求体解析失败，仍然需要记录令牌使用
             
             # 记录使用日志需要的信息
             operation_type = request.url.path.split("/")[-1]
@@ -98,12 +122,19 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
             target_collection = ""
             
             # 提取目标数据库和集合信息
-            if request_body and "connection" in request_body:
-                target_database = request_body["connection"].get("database", "")
+            if request_body and isinstance(request_body, dict):
+                # 针对不同结构的请求体尝试提取信息
+                if "connection" in request_body:
+                    if isinstance(request_body["connection"], dict):
+                        target_database = request_body["connection"].get("database", "")
                 
                 # 针对MongoDB操作，提取集合名
                 if "collection" in request_body:
                     target_collection = request_body.get("collection", "")
+                
+                # 针对SQL操作
+                if "table" in request_body:
+                    target_collection = request_body.get("table", "")
             
             # 响应状态
             status = "success" if response.status_code < 400 else "error"
@@ -120,7 +151,11 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
             )
             
             if not success:
-                logger.error("更新令牌使用信息失败")
+                logger.error(f"更新令牌使用记录失败！token_id={token_id}, ws_id={ws_id}, operation={operation_type}")
+                return False
+                
+            return True
                 
         except Exception as e:
-            logger.error(f"更新令牌使用次数时发生错误: {str(e)}") 
+            logger.error(f"更新令牌使用记录时发生错误: {str(e)}")
+            return False 

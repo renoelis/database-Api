@@ -13,6 +13,7 @@
 - **高并发请求控制** - 保护服务器资源不被过载
 - **全局统一错误处理** - 确保所有错误响应格式一致
 - **自动数据库集合验证** - 验证集合/表是否存在
+- **API访问令牌验证** - 保护API安全性
 
 ## 快速开始
 
@@ -39,26 +40,76 @@ pip install -r requirements.txt
 python run.py
 ```
 
-服务将在 http://localhost:3010 启动，并可通过Swagger UI访问API文档: http://localhost:3010/docs
+服务将在 http://localhost:3011 启动，并可通过Swagger UI访问API文档: http://localhost:3011/docs
 
 ### Docker部署
 
-1. 构建Docker镜像:
+1. 确保config目录存在:
 
 ```bash
-docker build -t database-api:latest .
+mkdir -p config
 ```
 
-2. 运行Docker容器:
+2. 使用提供的部署脚本（适用于M1/M2 Mac）:
 
 ```bash
-docker run -d -p 3010:3010 --name database-api database-api:latest
+chmod +x deploy.sh
+./deploy.sh
+```
+
+或手动构建和运行:
+
+```bash
+# 构建Docker镜像
+docker build -t database-api:latest .
+
+# 运行Docker容器
+docker run -d -p 3011:3011 -v $(pwd)/config:/app/config --name database-api database-api:latest
 ```
 
 或使用docker-compose:
 
 ```bash
 docker-compose -f docker-compose-database-api.yml up -d
+```
+
+## 访问令牌验证
+
+为保证API安全，所有API请求（根路径、文档和令牌查询接口除外）需要提供有效的访问令牌。
+
+### 获取访问令牌
+
+在服务首次启动时，系统会自动生成一个随机访问令牌并保存到`config/access_token.json`文件中。可以通过以下方式获取令牌：
+
+1. 直接查看配置文件:
+   ```bash
+   cat config/access_token.json
+   ```
+
+2. 使用API查询令牌:
+   ```
+   GET /apiDatabase/token
+   ```
+
+### 使用访问令牌
+
+在请求头中添加`accessToken`字段：
+
+```bash
+curl -X POST 'http://localhost:3011/apiDatabase/postgresql' \
+--header 'Content-Type: application/json' \
+--header 'accessToken: 您的访问令牌' \
+--data-raw '{
+  "connection": {
+    "host": "localhost",
+    "port": 5432,
+    "database": "your_database",
+    "user": "postgres",
+    "password": "your_password"
+  },
+  "sql": "SELECT * FROM your_table LIMIT 10",
+  "parameters": []
+}'
 ```
 
 ## API文档

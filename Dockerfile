@@ -28,10 +28,10 @@ RUN mkdir -p /app/config
 
 # 设置环境变量
 ENV PYTHONPATH=/app
-ENV PORT=3010
+ENV PORT=3011
 
 # 暴露端口
-EXPOSE 3010
+EXPOSE 3011
 
 # 使用Gunicorn运行应用
-CMD ["gunicorn", "app.main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:3010"] 
+CMD ["gunicorn", "app.main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:3011"] 

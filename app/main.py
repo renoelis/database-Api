@@ -5,6 +5,8 @@ import logging
 import os
 
 from app.routers import postgresql, mongodb
+from app.auth.routes import router as auth_router
+from app.auth.middleware import TokenAuthMiddleware
 from app.utils.pool import postgresql_pool, mongodb_pool
 from app.utils.concurrency import ConcurrencyLimiterMiddleware
 from app.utils.error_handler import setup_error_handlers
@@ -45,11 +47,15 @@ app.add_middleware(
     mongodb_max_concurrent=mongodb_max_concurrent,
 )
 
+# 添加令牌认证中间件
+app.add_middleware(TokenAuthMiddleware)
+
 logger.info(f"配置并发控制: 总并发={max_concurrent_requests}, PostgreSQL={postgresql_max_concurrent}, MongoDB={mongodb_max_concurrent}")
 
 # 注册路由
 app.include_router(postgresql.router, prefix="/apiDatabase")
 app.include_router(mongodb.router, prefix="/apiDatabase")
+app.include_router(auth_router, prefix="/apiDatabase")
 
 # 设置全局错误处理器
 setup_error_handlers(app)
@@ -60,9 +66,67 @@ async def root():
 
 @app.on_event("startup")
 async def startup_event():
-    """应用启动时执行的事件，初始化连接池"""
+    """应用启动时执行的事件，初始化连接池和数据库表"""
     logger.info("数据库API服务启动，初始化连接池")
-    # 连接池已在模块导入时初始化
+    
+    # 初始化数据库表
+    try:
+        # 创建表结构
+        conn, error = postgresql_pool.get_connection(
+            host="120.46.147.53",
+            port=5432, 
+            database="pro_db",
+            user="renoelis",
+            password="renoelis02@gmail.com"
+        )
+        
+        if not error and conn:
+            with conn.cursor() as cursor:
+                # 创建api_tokens表
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS api_tokens (
+                    token_id SERIAL PRIMARY KEY,
+                    access_token VARCHAR(64) UNIQUE NOT NULL,
+                    email VARCHAR(100) NOT NULL,
+                    ws_id VARCHAR(50) NOT NULL UNIQUE,
+                    token_type VARCHAR(20) NOT NULL DEFAULT 'limited',
+                    remaining_calls INTEGER,
+                    total_calls INTEGER,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                )
+                """)
+                
+                # 创建token_usage_logs表
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS token_usage_logs (
+                    log_id SERIAL PRIMARY KEY,
+                    token_id INTEGER REFERENCES api_tokens(token_id),
+                    ws_id VARCHAR(50) NOT NULL,
+                    operation_type VARCHAR(50) NOT NULL,
+                    target_database VARCHAR(50) NOT NULL,
+                    target_collection VARCHAR(50),
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    status VARCHAR(20) NOT NULL,
+                    request_details JSONB
+                )
+                """)
+                
+                conn.commit()
+                logger.info("数据库表初始化完成")
+            
+            postgresql_pool.release_connection(
+                host="120.46.147.53",
+                port=5432, 
+                database="pro_db",
+                user="renoelis",
+                conn=conn
+            )
+        else:
+            logger.error(f"数据库初始化失败: {error}")
+    except Exception as e:
+        logger.error(f"数据库初始化过程中发生错误: {str(e)}")
 
 @app.on_event("shutdown")
 async def shutdown_event():

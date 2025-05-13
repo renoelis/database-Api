@@ -220,3 +220,359 @@ MONGODB_MAX_CONCURRENT=100
 - 支持的MongoDB版本: 4.0+
 - 建议服务器规格: 4核CPU, 8GB内存 (大规模部署)
 - 小规模部署最低要求: 2核CPU, 2GB内存 
+
+## 令牌认证系统
+
+为了提供安全的API访问，数据库API服务现在集成了基于令牌的认证系统。此系统可以控制API的访问并跟踪使用情况。
+
+### 数据库初始化流程
+
+在首次部署服务时，需要执行以下数据库初始化步骤：
+
+#### 1. 检查并创建数据库
+
+如果需要新建数据库：
+
+```sql
+CREATE DATABASE pro_db;
+```
+
+如果数据库已存在，直接连接到现有数据库：
+
+```bash
+psql -h [host] -p 5432 -U [username] -d pro_db
+```
+
+#### 2. 创建令牌认证表
+
+连接到数据库后，创建令牌认证所需的表结构：
+
+```sql
+-- 创建API令牌表
+CREATE TABLE IF NOT EXISTS api_tokens (
+    token_id SERIAL PRIMARY KEY,
+    access_token VARCHAR(64) UNIQUE NOT NULL,
+    email VARCHAR(100) NOT NULL,
+    ws_id VARCHAR(50) NOT NULL UNIQUE,
+    token_type VARCHAR(20) NOT NULL DEFAULT 'limited',
+    remaining_calls INTEGER,
+    total_calls INTEGER,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 创建令牌使用日志表
+CREATE TABLE IF NOT EXISTS token_usage_logs (
+    log_id SERIAL PRIMARY KEY,
+    token_id INTEGER REFERENCES api_tokens(token_id),
+    ws_id VARCHAR(50) NOT NULL,
+    operation_type VARCHAR(50) NOT NULL,
+    target_database VARCHAR(50) NOT NULL,
+    target_collection VARCHAR(50),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(20) NOT NULL,
+    request_details JSONB
+);
+```
+
+#### 3. 启动与验证
+
+创建完表结构后，启动服务并验证表是否创建成功：
+
+```bash
+# 启动服务
+python run.py
+
+# 验证表是否创建成功
+psql -h [host] -p 5432 -U [username] -d pro_db -c "\dt"
+```
+
+应当看到`api_tokens`和`token_usage_logs`两个表在输出结果中。
+
+#### 4. 自动初始化功能
+
+为了简化部署流程，服务在启动时会自动检查并创建所需的表结构。该功能是通过在`app/main.py`的启动事件中实现的：
+
+```python
+@app.on_event("startup")
+async def startup_event():
+    """应用启动时执行的事件，初始化连接池和数据库表"""
+    logger.info("数据库API服务启动，初始化连接池")
+    
+    # 初始化数据库表
+    try:
+        # 创建表结构
+        conn, error = postgresql_pool.get_connection(
+            host="120.46.147.53",
+            port=5432, 
+            database="pro_db",
+            user="renoelis",
+            password="renoelis02@gmail.com"
+        )
+        
+        if not error and conn:
+            with conn.cursor() as cursor:
+                # 创建api_tokens表
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS api_tokens (
+                    token_id SERIAL PRIMARY KEY,
+                    access_token VARCHAR(64) UNIQUE NOT NULL,
+                    email VARCHAR(100) NOT NULL,
+                    ws_id VARCHAR(50) NOT NULL UNIQUE,
+                    token_type VARCHAR(20) NOT NULL DEFAULT 'limited',
+                    remaining_calls INTEGER,
+                    total_calls INTEGER,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                )
+                """)
+                
+                # 创建token_usage_logs表
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS token_usage_logs (
+                    log_id SERIAL PRIMARY KEY,
+                    token_id INTEGER REFERENCES api_tokens(token_id),
+                    ws_id VARCHAR(50) NOT NULL,
+                    operation_type VARCHAR(50) NOT NULL,
+                    target_database VARCHAR(50) NOT NULL,
+                    target_collection VARCHAR(50),
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    status VARCHAR(20) NOT NULL,
+                    request_details JSONB
+                )
+                """)
+                
+                conn.commit()
+                logger.info("数据库表初始化完成")
+            
+            postgresql_pool.release_connection(conn)
+        else:
+            logger.error(f"数据库初始化失败: {error}")
+    except Exception as e:
+        logger.error(f"数据库初始化过程中发生错误: {str(e)}")
+
+### 令牌特性
+
+- **每工作区唯一令牌**: 每个工作区(wsId)只能创建一个唯一的访问令牌
+- **按使用次数计费**: 支持有限次数调用和无限次调用两种类型
+- **自动扣减次数**: 每次数据库写入操作自动扣减一次调用次数
+- **次数管理**: 支持增加、设置和无限制三种次数管理方式
+
+### 令牌API
+
+#### 1. 创建令牌
+
+```
+POST /apiDatabase/auth/token
+```
+
+请求示例:
+
+```json
+{
+  "email": "user@example.com",
+  "ws_id": "workspace123",
+  "token_type": "limited",
+  "total_calls": 1000
+}
+```
+
+响应示例:
+
+```json
+{
+  "errCode": 0,
+  "data": {
+    "token_id": 1,
+    "access_token": "yZVKdhfL3ajfQ9XcvbnmPzcl5KPJSd8vwMZ9ks7JhSfKkd72",
+    "ws_id": "workspace123",
+    "token_type": "limited",
+    "remaining_calls": 1000,
+    "total_calls": 1000
+  },
+  "errMsg": null
+}
+```
+
+#### 2. 更新令牌使用次数
+
+```
+POST /apiDatabase/auth/token/update
+```
+
+请求示例:
+
+```json
+{
+  "ws_id": "workspace123",
+  "operation": "add",
+  "calls_value": 500
+}
+```
+
+支持的操作:
+- `add`: 增加指定次数
+- `set`: 设置为指定次数
+- `unlimited`: 设置为无限制使用
+
+响应示例:
+
+```json
+{
+  "errCode": 0,
+  "data": {
+    "token_id": 1,
+    "ws_id": "workspace123",
+    "token_type": "limited",
+    "remaining_calls": 1500,
+    "total_calls": 1500
+  },
+  "errMsg": null
+}
+```
+
+#### 3. 查询令牌信息
+
+```
+GET /apiDatabase/auth/token/info?ws_id=workspace123
+```
+
+响应示例:
+
+```json
+{
+  "errCode": 0,
+  "data": {
+    "token_id": 1,
+    "access_token": "yZVKdhfL3ajfQ9XcvbnmPzcl5KPJSd8vwMZ9ks7JhSfKkd72",
+    "email": "user@example.com",
+    "ws_id": "workspace123",
+    "token_type": "limited",
+    "remaining_calls": 995,
+    "total_calls": 1000,
+    "is_active": true,
+    "created_at": "2024-06-20T08:30:00.000Z",
+    "updated_at": "2024-06-20T09:15:30.000Z"
+  },
+  "errMsg": null
+}
+```
+
+### 令牌使用流程
+
+令牌认证系统的设计目的是控制和管理对数据库API的访问，特别是针对PostgreSQL和MongoDB数据库操作接口的调用权限和使用限额。完整的使用流程如下：
+
+#### 1. 令牌创建与管理
+
+1. 首先创建一个与工作区ID关联的访问令牌：
+```bash
+curl -X POST http://localhost:3010/apiDatabase/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","ws_id":"workspace123","token_type":"limited","total_calls":1000}'
+```
+
+2. 系统返回访问令牌，记录下`access_token`的值：
+```json
+{
+  "errCode": 0,
+  "data": {
+    "token_id": 1,
+    "access_token": "yZVKdhfL3ajfQ9XcvbnmPzcl5KPJSd8vwMZ9ks7JhSfKkd72",
+    "ws_id": "workspace123",
+    "token_type": "limited",
+    "remaining_calls": 1000,
+    "total_calls": 1000
+  },
+  "errMsg": null
+}
+```
+
+#### 2. 使用令牌调用数据库API
+
+使用上一步获取的令牌，可以调用PostgreSQL和MongoDB相关接口：
+
+##### PostgreSQL查询示例：
+
+```bash
+curl -X POST http://localhost:3010/apiDatabase/postgresql \
+  -H "accessToken: yZVKdhfL3ajfQ9XcvbnmPzcl5KPJSd8vwMZ9ks7JhSfKkd72" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "connection": {
+      "host": "120.46.147.53",
+      "port": 5432,
+      "database": "pro_db",
+      "user": "renoelis",
+      "password": "renoelis02@gmail.com"
+    },
+    "sql": "SELECT * FROM test LIMIT 5",
+    "parameters": []
+  }'
+```
+
+##### MongoDB查询示例：
+
+```bash
+curl -X POST http://localhost:3010/apiDatabase/mongodb \
+  -H "accessToken: yZVKdhfL3ajfQ9XcvbnmPzcl5KPJSd8vwMZ9ks7JhSfKkd72" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "connection": {
+      "host": "120.46.147.53",
+      "port": 27017,
+      "database": "test_db",
+      "username": "mongo_user",
+      "password": "mongo_password"
+    },
+    "collection": "users",
+    "operation": "find",
+    "filter": {"active": true},
+    "limit": 10
+  }'
+```
+
+#### 3. 令牌使用计费机制
+
+- 每次调用PostgreSQL或MongoDB的写操作（非GET请求）会自动扣减一次令牌的使用次数
+- 查询操作（GET请求）不消耗令牌次数
+- 当`remaining_calls`降至0时，API将拒绝后续请求，直到增购令牌次数
+
+#### 4. 查询和更新令牌额度
+
+可随时查询令牌剩余次数：
+```bash
+curl "http://localhost:3010/apiDatabase/auth/token/info?ws_id=workspace123"
+```
+
+当需要增加使用次数时：
+```bash
+curl -X POST http://localhost:3010/apiDatabase/auth/token/update \
+  -H "Content-Type: application/json" \
+  -d '{"ws_id":"workspace123","operation":"add","calls_value":500}'
+```
+
+### 使用令牌访问API
+
+在访问其他API端点时，可以通过以下两种方式提供令牌:
+
+1. 通过请求头 (推荐):
+```
+accessToken: your_access_token
+```
+
+2. 通过查询参数:
+```
+?access_token=your_access_token
+```
+
+### 令牌错误码
+
+| 错误码 | 描述 |
+|--------|------|
+| 1401 | 未提供访问令牌 |
+| 1402 | 无效的访问令牌 |
+| 1403 | 令牌调用次数已用完 |
+| 1050 | 工作区ID已存在关联的令牌 |
+| 1051 | 未找到工作区ID关联的令牌 | 

@@ -5,6 +5,7 @@ import logging
 import json
 import os
 from pathlib import Path
+from app.utils.response import error_response
 
 # 配置日志
 logger = logging.getLogger("database-api")
@@ -33,7 +34,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             logger.warning("请求缺少accessToken头")
             return JSONResponse(
                 status_code=401,
-                content={"detail": "缺少accessToken头"}
+                content=error_response(1401, "缺少accessToken头")
             )
         
         # 从配置文件读取有效令牌
@@ -47,14 +48,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
             logger.error(f"读取配置文件失败: {str(e)}")
             return JSONResponse(
                 status_code=500,
-                content={"detail": "服务器配置错误"}
+                content=error_response(9001, "服务器配置错误")
             )
             
         if not expected_token:
             logger.error("无法获取有效的访问令牌")
             return JSONResponse(
                 status_code=500,
-                content={"detail": "服务器配置错误"}
+                content=error_response(9002, "服务器配置错误")
             )
         
         # 验证令牌
@@ -62,7 +63,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             logger.warning("无效的访问令牌")
             return JSONResponse(
                 status_code=401,
-                content={"detail": "无效的访问令牌"}
+                content=error_response(1402, "无效的访问令牌")
             )
         
         # 验证通过，继续处理请求
@@ -72,5 +73,5 @@ class AuthMiddleware(BaseHTTPMiddleware):
             logger.error(f"请求处理过程中发生错误: {str(e)}", exc_info=True)
             return JSONResponse(
                 status_code=500,
-                content={"detail": "内部服务器错误"}
+                content=error_response(9999, "内部服务器错误")
             ) 

@@ -1,0 +1,30 @@
+services:
+  database-api-public-go:
+    image: database-api-public-go:latest
+    container_name: database-api-public-go
+    restart: always
+    ports:
+      - "3010:3010"
+    environment:
+      - PORT=3010
+      - MAX_CONCURRENT_REQUESTS=200
+      - POSTGRESQL_MAX_CONCURRENT=100
+      - MONGODB_MAX_CONCURRENT=100
+      - AUTH_DB_HOST=120.46.147.53
+      - AUTH_DB_PORT=5432
+      - AUTH_DB_USER=renoelis
+      - AUTH_DB_PASSWORD=renoelis02@gmail.com
+      - AUTH_DB_NAME=pro_db
+      - AUTH_DB_SSLMODE=disable
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+    networks:
+      - proxy_net
+
+networks:
+  proxy_net:
+    external: true
+    name: api-proxy_proxy_net

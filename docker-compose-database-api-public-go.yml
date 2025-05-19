@@ -10,11 +10,11 @@ services:
       - MAX_CONCURRENT_REQUESTS=200
       - POSTGRESQL_MAX_CONCURRENT=100
       - MONGODB_MAX_CONCURRENT=100
-      - AUTH_DB_HOST=120.46.147.53
+      - AUTH_DB_HOST=XXXXX
       - AUTH_DB_PORT=5432
-      - AUTH_DB_USER=renoelis
-      - AUTH_DB_PASSWORD=renoelis02@gmail.com
-      - AUTH_DB_NAME=pro_db
+      - AUTH_DB_USER=XXXXX
+      - AUTH_DB_PASSWORD=XXXXX
+      - AUTH_DB_NAME=XXXXX
       - AUTH_DB_SSLMODE=disable
     logging:
       driver: "json-file"

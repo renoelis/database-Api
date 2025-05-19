@@ -16,6 +16,7 @@
   
 - **令牌认证系统**
   - 支持不同类型的令牌(无限制/有限制)
+  - 支持不同插件类型的令牌(postgresql/mongodb/all)
   - 令牌使用日志记录
   - 定期清理过期日志
 
@@ -43,7 +44,7 @@
 │  ├─ auth.go                # 认证中间件
 │  └─ concurrency.go         # 并发控制中间件
 ├─ model/                    # 数据模型
-│  └─ token.go               # 令牌模型
+│  └─ auth.go                # 令牌模型
 ├─ router/                   # 路由配置
 │  └─ router.go              # 路由设置
 ├─ utils/                    # 工具类
@@ -51,7 +52,7 @@
 │  └─ response.go            # 响应格式化
 ├─ .dockerignore             # Docker忽略文件
 ├─ Dockerfile                # Docker构建文件
-├─ docker-compose.yml        # Docker Compose配置
+├─ docker-compose-database-api-public-go.yml # Docker Compose配置
 ├─ go.mod                    # Go模块定义
 └─ README.md                 # 项目说明文档
 ```
@@ -80,6 +81,35 @@
 | AUTH_DB_USER | 认证数据库用户名 | XXXXX |
 | AUTH_DB_PASSWORD | 认证数据库密码 | XXXXX |
 | AUTH_DB_SSLMODE | 认证数据库SSL模式 | disable |
+
+## 数据库表结构
+
+认证系统使用以下数据库表：
+
+1. **db_api_tokens** - 存储API访问令牌
+   - `token_id`: 令牌ID (主键)
+   - `access_token`: 访问令牌 (唯一)
+   - `email`: 用户邮箱
+   - `ws_id`: 工作区ID
+   - `token_type`: 令牌类型 (limited/unlimited)
+   - `plugin_type`: 插件类型 (postgresql/mongodb/all)
+   - `remaining_calls`: 剩余调用次数
+   - `total_calls`: 总调用次数
+   - `is_active`: 是否激活
+   - `created_at`: 创建时间
+   - `updated_at`: 更新时间
+   - 注：`ws_id`和`plugin_type`组合唯一约束
+
+2. **db_token_usage_logs** - 记录令牌使用日志
+   - `log_id`: 日志ID (主键)
+   - `token_id`: 令牌ID (外键)
+   - `ws_id`: 工作区ID
+   - `operation_type`: 操作类型
+   - `target_database`: 目标数据库
+   - `target_collection`: 目标集合
+   - `created_at`: 创建时间
+   - `status`: 状态
+   - `request_details`: 请求详情
 
 ## 性能优化
 
@@ -201,6 +231,7 @@ Content-Type: application/json
   "email": "user@example.com",
   "ws_id": "工作区ID",
   "token_type": "limited",
+  "plugin_type": "postgresql", // 可选值: postgresql, mongodb, all (默认为all)
   "total_calls": 1000
 }
 ```
@@ -212,10 +243,14 @@ Content-Type: application/json
   "code": 0,
   "message": "令牌创建成功",
   "data": {
-    "token": "eyJhbGc...",
-    "created_at": "2023-05-28T10:00:00Z",
+    "token_id": 1,
+    "access_token": "tvKljrkP6HgH7on67wTYnxPJ7ju4QyBHUzuXWc1YGMW0inPO",
+    "ws_id": "工作区ID",
     "token_type": "limited",
-    "remaining_calls": 1000
+    "plugin_type": "postgresql",
+    "remaining_calls": 1000,
+    "total_calls": 1000,
+    "used_calls": 0
   }
 }
 ```
@@ -227,9 +262,9 @@ POST /apiDatabase/auth/token/update
 Content-Type: application/json
 
 {
-  "ws_id": "工作区ID",
-  "operation": "add",
-  "calls_value": 100
+  "access_token": "tvKljrkP6HgH7on67wTYnxPJ7ju4QyBHUzuXWc1YGMW0inPO",
+  "operation": "add",  // 可选值: add, set, unlimited
+  "calls_value": 100   // add和set操作时需要提供
 }
 ```
 
@@ -238,36 +273,88 @@ Content-Type: application/json
 ```json
 {
   "code": 0,
-  "message": "令牌调用次数更新成功",
+  "message": "成功",
   "data": {
-    "previous_calls": 500,
-    "current_calls": 600
+    "token_id": 1,
+    "ws_id": "工作区ID",
+    "token_type": "limited",
+    "plugin_type": "postgresql",
+    "remaining_calls": 1100,
+    "total_calls": 1100,
+    "used_calls": 0
   }
 }
 ```
+
+> **注意**: 
+> - `add` 操作会同时增加 `total_calls` 和 `remaining_calls`
+> - `set` 操作会将 `total_calls` 和 `remaining_calls` 同时设置为指定值
+> - `unlimited` 操作会将令牌转换为无限制类型，移除调用次数限制
 
 #### 查询令牌信息
 
 ```
-GET /apiDatabase/auth/token/info?ws_id=工作区ID
+GET /apiDatabase/auth/token/info?ws_id=工作区ID&plugin_type=postgresql
 ```
 
-响应示例：
+> 注意：如果不提供plugin_type参数，将返回该工作区的所有令牌列表
+
+响应示例（指定plugin_type时）：
 
 ```json
 {
   "code": 0,
-  "message": "令牌信息查询成功",
+  "message": "成功",
   "data": {
-    "token": "eyJhbGc...",
+    "token_id": 1,
+    "access_token": "tvKljrkP6HgH7on67wTYnxPJ7ju4QyBHUzuXWc1YGMW0inPO",
     "ws_id": "工作区ID",
     "email": "user@example.com",
-    "created_at": "2023-05-28T10:00:00Z",
     "token_type": "limited",
+    "plugin_type": "postgresql",
+    "remaining_calls": 600,
     "total_calls": 1000,
     "used_calls": 400,
-    "remaining_calls": 600
+    "is_active": true,
+    "created_at": "2023-05-28T10:00:00Z",
+    "updated_at": "2023-05-28T10:15:00Z"
   }
+}
+```
+
+响应示例（不指定plugin_type时）：
+
+```json
+{
+  "code": 0,
+  "message": "成功",
+  "data": [
+    {
+      "token_id": 1,
+      "access_token": "tvKljrkP6HgH7on67wTYnxPJ7ju4QyBHUzuXWc1YGMW0inPO",
+      "ws_id": "工作区ID",
+      "email": "user@example.com",
+      "token_type": "limited",
+      "plugin_type": "postgresql",
+      "remaining_calls": 600,
+      "total_calls": 1000,
+      "used_calls": 400,
+      "is_active": true,
+      "created_at": "2023-05-28T10:00:00Z",
+      "updated_at": "2023-05-28T10:15:00Z"
+    },
+    {
+      "token_id": 2,
+      "access_token": "a8dFgH7jK9L0mN1pQ2rS3tU4vW5xY6zAb2CdE3FgH4iJ5k",
+      "ws_id": "工作区ID",
+      "email": "user@example.com",
+      "token_type": "unlimited",
+      "plugin_type": "mongodb",
+      "is_active": true,
+      "created_at": "2023-05-28T11:00:00Z",
+      "updated_at": "2023-05-28T11:00:00Z"
+    }
+  ]
 }
 ```
 
@@ -423,11 +510,12 @@ docker-compose -f docker-compose-database-api-public-go.yml up -d
      - 临时禁用并发限制：`GET /apiDatabase/system/concurrency/disable`（需要renoelis管理员令牌）
      - 优化客户端请求频率
 
-2. **认证失败（401 Unauthorized）**
-   - 原因：令牌无效或已过期
+2. **认证失败（401 Unauthorized 或 403 Forbidden）**
+   - 原因：令牌无效、已过期或权限不足
    - 解决方法：
      - 检查令牌是否正确
      - 对于limited类型令牌，检查可用调用次数
+     - 检查令牌的plugin_type是否有权限访问目标API（postgresql/mongodb）
      - 申请新的令牌
 
 3. **数据库连接失败**

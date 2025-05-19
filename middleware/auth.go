@@ -61,9 +61,25 @@ func TokenAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		// 检查plugin_type权限
+		pluginType, _ := tokenInfo["plugin_type"].(string)
+
+		// 检查路径是否匹配令牌的plugin_type
+		if strings.Contains(path, "/apiDatabase/postgresql") && pluginType != "postgresql" && pluginType != "all" {
+			utils.ErrorResponse(c, 1404, "该令牌无权访问PostgreSQL接口")
+			c.Abort()
+			return
+		}
+
+		if strings.Contains(path, "/apiDatabase/mongodb") && pluginType != "mongodb" && pluginType != "all" {
+			utils.ErrorResponse(c, 1404, "该令牌无权访问MongoDB接口")
+			c.Abort()
+			return
+		}
+
 		// 严格检查写操作 - POST, PUT, PATCH, DELETE方法
-		isWriteOperation := c.Request.Method == "POST" || c.Request.Method == "PUT" || 
-						    c.Request.Method == "PATCH" || c.Request.Method == "DELETE"
+		isWriteOperation := c.Request.Method == "POST" || c.Request.Method == "PUT" ||
+			c.Request.Method == "PATCH" || c.Request.Method == "DELETE"
 
 		// 检查令牌调用次数（仅对有限制的令牌进行检查）
 		if isWriteOperation && tokenInfo["token_type"] == "limited" {
@@ -101,26 +117,26 @@ func TokenAuthMiddleware() gin.HandlerFunc {
 func updateTokenUsage(c *gin.Context, tokenInfo map[string]interface{}) {
 	tokenID := int(tokenInfo["token_id"].(int))
 	wsID := tokenInfo["ws_id"].(string)
-	
+
 	// 获取操作类型
 	operationType := c.FullPath()
 	parts := strings.Split(operationType, "/")
 	if len(parts) > 0 {
 		operationType = parts[len(parts)-1]
 	}
-	
+
 	// 提取请求体
 	var requestBody map[string]interface{}
 	var targetDatabase string
 	var targetCollection *string
-	
+
 	// 尝试从存储的原始请求体解析
 	if rawBody, exists := c.Get("rawRequestBody"); exists {
 		if bodyBytes, ok := rawBody.([]byte); ok && len(bodyBytes) > 0 {
 			json.Unmarshal(bodyBytes, &requestBody)
 		}
 	}
-	
+
 	// 提取目标数据库和集合信息
 	if requestBody != nil {
 		// 针对不同结构的请求体尝试提取信息
@@ -129,14 +145,14 @@ func updateTokenUsage(c *gin.Context, tokenInfo map[string]interface{}) {
 				targetDatabase = db.(string)
 			}
 		}
-		
+
 		// 针对MongoDB操作，提取集合名
 		if collection, exists := requestBody["collection"]; exists {
 			if collStr, ok := collection.(string); ok {
 				targetCollection = &collStr
 			}
 		}
-		
+
 		// 针对SQL操作
 		if table, exists := requestBody["table"]; exists {
 			if tableStr, ok := table.(string); ok {
@@ -144,13 +160,13 @@ func updateTokenUsage(c *gin.Context, tokenInfo map[string]interface{}) {
 			}
 		}
 	}
-	
+
 	// 响应状态
 	status := "success"
 	if c.Writer.Status() >= 400 {
 		status = "error"
 	}
-	
+
 	// 更新令牌使用情况
 	success := database.UpdateTokenUsage(
 		tokenID,
@@ -161,8 +177,8 @@ func updateTokenUsage(c *gin.Context, tokenInfo map[string]interface{}) {
 		status,
 		requestBody,
 	)
-	
+
 	if !success {
 		log.Printf("更新令牌使用记录失败！token_id=%d, ws_id=%s, operation=%s", tokenID, wsID, operationType)
 	}
-} 
+}

@@ -4,11 +4,11 @@ import "os"
 
 // AuthDBConfig 认证数据库配置
 var AuthDBConfig = map[string]string{
-	"host":     getEnv("AUTH_DB_HOST", "196.185.170.10"),
+	"host":     getEnv("AUTH_DB_HOST", "120.45.147.57"),
 	"port":     getEnv("AUTH_DB_PORT", "5432"),
-	"database": getEnv("AUTH_DB_NAME", "4444"),
-	"user":     getEnv("AUTH_DB_USER", "123456"),
-	"password": getEnv("AUTH_DB_PASSWORD", "123456"),
+	"database": getEnv("AUTH_DB_NAME", "pro_db"),
+	"user":     getEnv("AUTH_DB_USER", "******"),
+	"password": getEnv("AUTH_DB_PASSWORD", "*****"),
 	"sslmode":  getEnv("AUTH_DB_SSLMODE", "disable"),
 }
 
@@ -19,4 +19,4 @@ func getEnv(key, defaultValue string) string {
 		return defaultValue
 	}
 	return value
-} 
+}

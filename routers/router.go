@@ -8,6 +8,9 @@ import (
 
 // SetupRouter 设置所有路由
 func SetupRouter() *gin.Engine {
+	// 设置为生产环境模式
+	gin.SetMode(gin.ReleaseMode)
+
 	// 初始化Gin
 	router := gin.Default()
 
@@ -15,7 +18,7 @@ func SetupRouter() *gin.Engine {
 	router.Use(middleware.LoggerMiddleware())
 	router.Use(middleware.CORSMiddleware())
 	router.Use(middleware.RecoveryMiddleware())
-	
+
 	// 获取并发限制配置
 	router.Use(middleware.ConcurrencyLimiterMiddleware())
 
@@ -29,10 +32,10 @@ func SetupRouter() *gin.Engine {
 	{
 		// PostgreSQL路由
 		api.POST("/postgresql", controllers.ExecutePostgreSQL)
-		
+
 		// MongoDB路由
 		api.POST("/mongodb", controllers.ExecuteMongoDB)
 	}
 
 	return router
-} 
+}
